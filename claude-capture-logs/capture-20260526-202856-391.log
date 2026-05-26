@@ -1,0 +1,37 @@
+Time: 2026-05-26T12:28:56.078Z
+Target: anyrouter
+Upstream base_url: https://anyrouter.top
+Request: HEAD /
+
+========== Incoming Headers From Claude Code ==========
+{
+  "connection": "keep-alive",
+  "user-agent": "Bun/1.3.14",
+  "accept": "*/*",
+  "host": "127.0.0.1:8787",
+  "accept-encoding": "gzip, deflate, br, zstd"
+}
+
+========== Incoming Body From Claude Code ==========
+
+
+========== Upstream Response Status ==========
+HTTP 200 OK
+
+========== Upstream Response Headers ==========
+{
+  "cache-control": "no-cache, no-store",
+  "connection": "close",
+  "content-type": "text/html; charset=utf-8",
+  "date": "Tue, 26 May 2026 12:28:56 GMT",
+  "eagleid": "a3b5c99617797985363793142e",
+  "pragma": "no-cache",
+  "server": "ESA",
+  "set-cookie": "cdn_sec_tc=a3b5c99617797985363793142e153cca027cb3d51299a1bc972d8a9c15;path=/;HttpOnly;Max-Age=3600",
+  "timing-allow-origin": "*",
+  "via": "ens-cache2.sg25[,403102]",
+  "x-tengine-error": "denied by http_custom"
+}
+
+========== Upstream Response Body ==========
+(empty)
