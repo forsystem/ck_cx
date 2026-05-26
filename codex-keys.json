@@ -1,0 +1,12 @@
+{
+  "port": 8766,
+  "keys": [
+    {
+      "name": "right-codes",
+      "base_url": "https://right.codes/codex/v1",
+      "key": "sk-75ae4fe15abc466da4bcaefbab318115",
+      "enabled": true,
+      "test_model": "gpt-5.5"
+    }
+  ]
+}
