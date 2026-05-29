@@ -1,0 +1,15 @@
+{
+  "name": "claude-key-rotator",
+  "version": "0.2.0",
+  "private": true,
+  "description": "API key rotator for Claude Code (ck) and Codex CLI (cx)",
+  "scripts": {
+    "test": "node tests/run.js tests/test-args.test.js tests/e2e.test.js",
+    "test:unit": "node tests/run.js tests/test-args.test.js",
+    "test:e2e": "node tests/run.js tests/e2e.test.js",
+    "lint": "node -c rotator.js && node -c codex-rotator.js && node -c test-args.js && node -c capture-claude-code.js && node -c test-model.js && node -c tests/run.js && node -c tests/test-args.test.js && node -c tests/e2e.test.js && node -c tests/stub-server.js && echo OK"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

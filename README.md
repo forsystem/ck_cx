@@ -68,7 +68,10 @@ C:\Users\HP\claude-key-rotator\
 | `ck add` | 交互式添加 key |
 | `ck add <name> <url> <key>` | 一行命令添加 key |
 | `ck list` / `ck ls` | 列出所有 key |
-| `ck test` | 一次性测试所有 key 的可用性 |
+| `ck test` | 测试所有 key 的可用性(每个 key 用各自的 `test_model`) |
+| `ck test <编号>` | 只测指定编号的 key,例如 `ck test 2` |
+| `ck test <a>-<b>` | 测试编号区间,例如 `ck test 1-4` |
+| `ck test <编号\|区间> <模型>` | 统一用指定模型测试,例如 `ck test 1-4 "claude-opus-4-7"` |
 | `ck remove [编号]` / `ck rm` | 删除一个 key |
 | `ck toggle <编号>` | 启用 / 禁用一个 key(不删除) |
 | `ck help` | 显示帮助 |
@@ -89,11 +92,64 @@ ck -c "解释 main.go"
 | `cx add <name> <url> <key>` | 一行命令添加 codex key |
 | `cx list` / `cx ls` | 列出所有 codex key |
 | `cx test` | 测试所有 codex key |
+| `cx test <编号>` | 只测指定编号,例如 `cx test 2` |
+| `cx test <a>-<b>` | 测试编号区间,例如 `cx test 1-4` |
+| `cx test <编号\|区间> <模型>` | 统一用指定模型测试,例如 `cx test 1-4 "gpt-5.5"` |
 | `cx remove [编号]` / `cx rm` | 删除一个 codex key |
 | `cx toggle <编号>` | 启用 / 禁用一个 codex key |
 | `cx help` | 显示帮助 |
 
 `cx` 操作的是 `codex-keys.json`,**不会影响 ck 的配置**;反之亦然。多余参数同样透传给 `codex`。
+
+### 4.3 `test` 子命令：范围 + 自定义模型
+
+`ck test` 和 `cx test` 都支持选一部分 key 测，并可强制用一个统一模型发预检请求。两边语义完全相同。
+
+```powershell
+# 第 1 到第 4 个 key 都用 "gpt-5.5" 测一遍
+cx test 1-4 "gpt-5.5"
+cx test 1-4 gpt-5.5            # 引号可省
+
+cx test 1-4                    # 用各 key 自己的 test_model（缺省时再 fallback）
+cx test 2                      # 只测第 2 个
+
+# ck 同语义
+ck test 1-4 "claude-opus-4-7"
+ck test 1-4
+ck test 2
+```
+
+典型输出（4 个 key，其中第 3 个已禁用）：
+
+```
+使用统一测试模型: claude-opus-4-7
+[1] 中转站A ... ✓ OK  (model: claude-opus-4-7, 812ms)
+[2] 中转站B ... ✓ OK  (model: claude-opus-4-7, 967ms)
+[3] 中转站C ... 禁用，跳过
+[4] 中转站D ... ✓ OK  (model: claude-opus-4-7, 1204ms)
+
+合计: 3 可用 / 0 失败 / 1 跳过
+```
+
+**参数说明：**
+
+- 第 1 个参数是**编号**或**区间**：`2` / `1-4` / `3-3`（编号从 1 开始，区间包含两端）
+- 第 2 个参数（可选）是**模型名**：传了 → 选中的 key 全部用它，**忽略**各自的 `test_model`；没传 → 各 key 用自己的；双/单引号都行
+- 一个参数都不传 → 测全部 key（保持旧行为）
+
+**典型错误及提示（出错时退出码非 0）：**
+
+| 输入 | 提示 |
+|------|------|
+| `ck test 4-1` | `非法范围 4-1：起点必须 ≤ 终点。是不是想写 1-4？` |
+| `ck test 1-99`（只有 4 个 key） | `范围 1-99 超出可用 key 数量（当前共有 4 个，可用范围 1-4）` |
+| `ck test 99` | `编号 99 超出范围（当前共有 4 个 key，可用范围 1-4）` |
+| `ck test 0` 或 `0-3` | `编号从 1 开始，不存在第 0 个 key。...` |
+| `ck test gpt-5.5`（漏了编号） | `无法解析范围 "gpt-5.5"。用法示例：test 1（单个）/ test 1-4（范围）` |
+| `ck test`（空 keys） | `还没有任何 key，先用 add 命令添加一个再试` |
+| `ck test 1-4 a b` | `多余的参数：b。用法：test [编号\|范围] [模型]` |
+
+> **注意：** 统一模型只影响**预检/测试**这一次请求，**不影响** `ck` / `cx` 之后启动 CLI 时的会话模型——会话模型仍由 Claude Code / Codex CLI 自己决定。
 
 ---
 
@@ -130,7 +186,7 @@ ck                 # Claude Code,本地代理 8765
 cx                 # Codex CLI,本地代理 8766
 ```
 
-### 5.2 日常使用
+### 5.3 日常使用
 
 ```powershell
 ck            # 一条命令搞定
@@ -157,7 +213,7 @@ ck            # 一条命令搞定
 
 (终端里会有这两行红色提示,Claude Code 本身不会出错、不会断会话。)
 
-### 5.3 删 / 加 / 禁用
+### 5.4 删 / 加 / 禁用
 
 ```powershell
 ck list                     # 看一下当前都有哪些
@@ -204,7 +260,9 @@ ck add "新中转站" https://api.new.com sk-zzz   # 一行加
 | `keys[].base_url` | **是** | 中转站根地址,**不要带 `/v1`** |
 | `keys[].key` | **是** | API key 本体 |
 | `keys[].enabled` | 否 | 默认 true,设 false 跳过 |
-| `keys[].test_model` | 否 | 测试模型,默认 `claude-haiku-4-5-20251001`,失败时 fallback 到 `claude-3-5-haiku-20241022` |
+| `keys[].test_model` | 否 | 测试模型,默认 `claude-opus-4-7[1m]`(走 Claude Code 风格的预检 body),失败时 fallback 到 `claude-3-5-haiku-20241022` |
+
+> **`[1m]` 后缀**:当 `test_model` 以 `[1m]` 结尾时,rotator 会用 Claude Code 真实启动的那一套**完整请求姿势**(带 beta headers、stream、system prompt 缓存标记)来预检,而不是简单的 `{"messages":[{"role":"user","content":"hi"}]}`。这能验证中转站是否真的兼容 Claude Code,而不仅仅是 `/v1/messages` 是否能 ping 通。预检时 rotator 自己会把 `[1m]` 剥掉再发给上游。
 
 > **顺序很重要**:列表从上到下就是优先级。把"主力 key"放最前面,"备胎"靠后。
 
@@ -221,7 +279,7 @@ ck add "新中转站" https://api.new.com sk-zzz   # 一行加
       "base_url": "https://right.codes/codex/v1",
       "key": "sk-...",
       "enabled": true,
-      "test_model": "gpt-5.2-low"
+      "test_model": "gpt-5.5"
     }
   ]
 }
@@ -234,7 +292,7 @@ ck add "新中转站" https://api.new.com sk-zzz   # 一行加
 | `port` | 否 | 本地代理监听端口,默认 8766 |
 | `keys[].base_url` | **是** | OpenAI 兼容根地址。带不带 `/v1` 都行——代理会智能去重 |
 | `keys[].key` | **是** | OpenAI 风格 key(`sk-...`) |
-| `keys[].test_model` | 否 | 默认尝试 `gpt-4o-mini`、失败时 fallback 到 `gpt-5-codex` / `gpt-5` / `o4-mini` 等,再失败 fallback 到 right.codes 等中转站的自定义别名(如 `gpt-5.2-low`)。建议给每个 key 显式指定它真正能用的模型,加速启动 |
+| `keys[].test_model` | 否 | 预检模型,默认 `gpt-5-5`(没有 fallback)。建议给每个 key 显式指定它真正能用的模型,加速启动 |
 
 > **Codex 中转站的"模型名"经常是中转站自己定义的别名**(如 `gpt-5.3-codex`、`gpt-5.4-mini`)而非 OpenAI 官方模型名。可以用 `curl -H "Authorization: Bearer <key>" <base_url>/models` 看支持哪些。
 
@@ -244,7 +302,7 @@ ck add "新中转站" https://api.new.com sk-zzz   # 一行加
 
 ### 7.1 启动阶段
 
-1. 读 `keys.json`,从前往后扫描,对每个启用的 key 发一次 `max_tokens=1` 的 `hi` 请求(成本约 0.000003 美元)。
+1. 读 `keys.json`,从前往后扫描,对每个启用的 key 发一次小请求(`max_tokens=1` 的 `hi`,几乎可以忽略的成本)。
 2. 第一个返回 200 的 key 被选为"当前 key"。
 3. 在 `127.0.0.1:<port>` 启动 HTTP 代理。
 4. 设置环境变量 `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`,`ANTHROPIC_AUTH_TOKEN=rotator-managed`(占位符,代理会覆盖)。
@@ -331,7 +389,7 @@ ck add "新中转站" https://api.new.com sk-zzz   # 一行加
 
 ### Q: 测试 key 时报 `400 ... 未配置模型 ...`?
 
-中转站不支持默认的测试模型。`cx` 的 fallback 链已经覆盖了主流别名(`gpt-4o-mini` → `gpt-5-codex` → `gpt-5.2-low` → ...),通常能自动找到能用的。如果都不行:
+中转站不支持默认的测试模型。`cx` 默认只试 `gpt-5-5`,中转站如果只认别的名字就会失败。修复方法:
 
 ```powershell
 # 查中转站到底支持哪些模型
@@ -352,9 +410,26 @@ curl -H "Authorization: Bearer <你的key>" https://your-relay.com/v1/models
 
 直接编辑 `keys.json` / `codex-keys.json` 改 `base_url` 字段,或者删了重新 add。
 
+### Q: 我想用统一的模型测试所有 key,看看哪些 key 对这个模型还有额度?
+
+```powershell
+ck test 1-4 "claude-opus-4-7"
+cx test 1-4 "gpt-5.5"
+```
+
+第二个参数会**覆盖**每个 key 的 `test_model`,所有选中的 key 都用同一个模型发预检请求。引号可加可不加。
+
+### Q: 不传模型时,`ck test 1-4` 到底用了哪个模型?
+
+每个 key 用各自的 `test_model` 字段。如果该字段没填:
+- `ck`：先试内置默认（当前是 `claude-opus-4-7[1m]`），再 fallback 到 `claude-3-5-haiku-20241022`
+- `cx`：内置默认 `gpt-5-5`（没有 fallback）
+
+实际跑到了哪个模型，输出里会写：`✓ OK  (model: <实际用的>, <耗时>ms)`。如果你想覆盖某个 key 的默认，编辑配置文件加上 `"test_model": "<你想用的>"` 就行。
+
 ### Q: 是不是每次启动都会消耗几个 token 来测试?
 
-是的。每个 key 大约 5 个 input + 1 个 output token,几乎可以忽略(haiku 4.5 大约 0.000003 美元)。但如果你某个 key **充值额度恰好在阈值附近**,被预检消耗可能让 Claude Code 启动后立刻触发切换——这是设计权衡,优先保证启动后稳定。
+是的。每个 key 大约 5 个 input + 1 个 output token,即便用 Opus 也只是几分钱量级,可以忽略。但如果你某个 key **充值额度恰好在阈值附近**,被预检消耗可能让 Claude Code 启动后立刻触发切换——这是设计权衡,优先保证启动后稳定。
 
 ### Q: 代理会破坏上游的 prompt cache 吗?
 
@@ -382,7 +457,29 @@ curl -H "Authorization: Bearer <你的key>" https://your-relay.com/v1/models
 
 ---
 
-## 10. 卸载
+## 10. 开发 / 测试
+
+仓库自带零依赖的 Node 测试（83 个用例，覆盖参数解析、范围语义、错误提示、模型转发、禁用 key、上游 401、回显 key 防泄露、UTF-8 BOM 配置、null 条目、根节点类型校验等）：
+
+```powershell
+npm test                  # 全部测试（unit + e2e）
+npm run test:unit         # 只跑 parser 单测
+npm run test:e2e          # 只跑端到端
+npm run lint              # 对所有 .js 做 node -c 语法检查
+```
+
+`tests/stub-server.js` 是一个本地 HTTP 桩，模拟 `/v1/messages` 和 `/v1/responses`，所以测试**不会**消耗真实 API key 或额度。详见 [`tests/README.md`](tests/README.md)。
+
+测试期间可以通过环境变量临时换配置文件路径，不会污染你的 `keys.json` / `codex-keys.json`：
+
+```powershell
+$env:CK_ROTATOR_CONFIG = "C:\path\to\fake-keys.json"
+$env:CODEX_ROTATOR_CONFIG = "C:\path\to\fake-codex.json"
+```
+
+---
+
+## 11. 卸载
 
 ```powershell
 Remove-Item -Recurse -Force C:\Users\HP\claude-key-rotator

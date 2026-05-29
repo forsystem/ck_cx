@@ -10,10 +10,16 @@ const { spawn } = require('child_process');
 const { Readable } = require('stream');
 const { randomUUID } = require('crypto');
 
-const CONFIG_FILE = path.join(__dirname, 'keys.json');
-const LOG_FILE = path.join(__dirname, 'rotator.log');
+const { parseTestArgs } = require('./test-args');
+
+const CONFIG_FILE = process.env.CK_ROTATOR_CONFIG
+  ? path.resolve(process.env.CK_ROTATOR_CONFIG)
+  : path.join(__dirname, 'keys.json');
+const LOG_FILE = process.env.CK_ROTATOR_LOG
+  ? path.resolve(process.env.CK_ROTATOR_LOG)
+  : path.join(__dirname, 'rotator.log');
 const DEFAULT_PORT = 8765;
-const TEST_MODEL_DEFAULT = 'claude-opus-4-7[1m]';
+const TEST_MODEL_DEFAULT = 'claude-opus-4-8[1m]';
 const TEST_MODEL_FALLBACK = 'claude-3-5-haiku-20241022';
 const SWITCH_STATUS = new Set([401, 402, 403, 407, 429]);
 const TRANSIENT_STATUS = new Set([408, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
@@ -47,7 +53,14 @@ function loadConfig() {
     return { port: DEFAULT_PORT, keys: [] };
   }
   try {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    let raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
+    // Windows 上的编辑器经常会塞个 UTF-8 BOM，去掉它，否则 JSON.parse 会炸。
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('根节点必须是 JSON object（含 port 和 keys）');
+    }
+    const cfg = parsed;
     if (!Array.isArray(cfg.keys)) cfg.keys = [];
     if (!cfg.port) cfg.port = DEFAULT_PORT;
     return cfg;
@@ -65,6 +78,32 @@ function maskKey(k) {
   if (!k) return '';
   if (k.length <= 12) return k.slice(0, 2) + '***';
   return k.slice(0, 6) + '...' + k.slice(-4);
+}
+
+// 校验单个 key 条目：返回错误描述（空串表示合法）。
+function validateEntry(entry) {
+  if (!entry || typeof entry !== 'object') return '不是一个有效的对象';
+  if (!entry.base_url) return 'base_url 不能为空';
+  if (typeof entry.base_url !== 'string' || !/^https?:\/\//i.test(entry.base_url)) {
+    return 'base_url 必须以 http:// 或 https:// 开头';
+  }
+  if (!entry.key) return 'key 不能为空';
+  return '';
+}
+
+// 上游有时会在错误体里把 key 整段回显。打印前先把所有可能泄露的位置打码。
+function scrubKey(text, key) {
+  if (!text || !key || key.length < 8) return text || '';
+  const masked = maskKey(key);
+  let out = String(text);
+  // 直接替换原文里的 key（全局）
+  // 不用正则，避免 key 里有正则元字符。
+  while (true) {
+    const i = out.indexOf(key);
+    if (i < 0) break;
+    out = out.slice(0, i) + masked + out.slice(i + key.length);
+  }
+  return out;
 }
 
 function logLine(msg) {
@@ -238,6 +277,7 @@ async function testKey(entry, model) {
     clearTimeout(t);
 
     const text = await res.text().catch(() => '');
+    const safeText = scrubKey(text, entry.key);
     if (res.ok) {
       return {
         ok: true,
@@ -245,7 +285,7 @@ async function testKey(entry, model) {
         model,
         actualModel: req.actualModel,
         claudeCodeLike: !!parseTestModel(model).claudeCodeLike,
-        responseSample: text.slice(0, 600),
+        responseSample: safeText.slice(0, 600),
       };
     }
 
@@ -253,8 +293,8 @@ async function testKey(entry, model) {
       ok: false,
       status: res.status,
       statusText: res.statusText || '',
-      errorBody: parseErrorBody(text),
-      rawBody: text.slice(0, 600),
+      errorBody: parseErrorBody(safeText),
+      rawBody: safeText.slice(0, 600),
       model,
       actualModel: req.actualModel,
       claudeCodeLike: !!parseTestModel(model).claudeCodeLike,
@@ -277,7 +317,13 @@ async function testKey(entry, model) {
 // 401/402/403/407/429 等是 key 本身的问题,换 model 救不了。
 const MODEL_ERROR_STATUS = new Set([400, 404, 422]);
 
-async function testKeyWithFallback(entry) {
+async function testKeyWithFallback(entry, overrideModel) {
+  if (overrideModel) {
+    const r = await testKey(entry, overrideModel);
+    if (r.ok) return { ok: true, model: r.model, tried: [r] };
+    return { ok: false, transient: !!r.transient, tried: [r] };
+  }
+
   const candidates = [];
   if (entry.test_model) candidates.push(entry.test_model);
   candidates.push(TEST_MODEL_DEFAULT, TEST_MODEL_FALLBACK);
@@ -407,8 +453,9 @@ function startProxy(cfg, startIndex) {
       // 触发切换的状态码：读完 body，标记 key 失效，换下一个
       if (SWITCH_STATUS.has(upstreamRes.status)) {
         const errText = await upstreamRes.text().catch(() => '');
+        const safeErrText = scrubKey(errText, entry.key);
         console.log(`\n[rotator] key "${tag}" 失效 (${upstreamRes.status})，自动切换`);
-        logLine(`[${tag}] ${upstreamRes.status}: ${errText.slice(0, 200)}`);
+        logLine(`[${tag}] ${upstreamRes.status}: ${safeErrText.slice(0, 200)}`);
         state.deadKeys.add(state.idx);
         attempt++;
         const next = pickNext();
@@ -543,10 +590,17 @@ async function cmdStart(extraArgs) {
       console.log(`${label} — 已禁用，跳过`);
       continue;
     }
+    const invalid = validateEntry(k);
+    if (invalid) {
+      console.log(`${label} — 配置无效：${invalid}`);
+      continue;
+    }
     process.stdout.write(`${label} ... `);
+    const t0 = Date.now();
     const r = await testKeyWithFallback(k);
+    const ms = Date.now() - t0;
     if (r.ok) {
-      console.log(`✓ OK  (model: ${r.model})`);
+      console.log(`✓ OK  (model: ${r.model}, ${ms}ms)`);
       firstOk = i;
       firstOkModel = r.model;
       break;
@@ -560,9 +614,9 @@ async function cmdStart(extraArgs) {
     if (r.transient && firstTransient === -1) {
       firstTransient = i;
       firstTransientModel = k.test_model || TEST_MODEL_DEFAULT;
-      console.log(`⚠ ${tag}（暂时性错误，先记为候选）`);
+      console.log(`⚠ ${tag}（暂时性错误，先记为候选）  (${ms}ms)`);
     } else {
-      console.log(`✗ ${tag}`);
+      console.log(`✗ ${tag}  (${ms}ms)`);
     }
     printTestFailure(r);
   }
@@ -729,30 +783,77 @@ function cmdList() {
   listKeys(loadConfig());
 }
 
-async function cmdTest() {
+async function cmdTest(args) {
+  // 显式 --help 走帮助
+  if (args.length === 1 && (args[0] === '-h' || args[0] === '--help')) {
+    console.log(`ck test [编号|区间] [模型]
+
+不传参数：测试所有 key（各自的 test_model）
+ck test 2                  只测第 2 个 key
+ck test 1-4                测试编号区间（包含两端）
+ck test 1-4 "模型"          统一用该模型测试（双/单引号可省）
+
+错误退出码:
+  非法范围(如 4-1)、超出范围、空 keys、无法解析参数 → 退出码 1
+`);
+    return;
+  }
+
   const cfg = loadConfig();
-  if (cfg.keys.length === 0) { console.log('(空)'); return; }
+  const parsed = parseTestArgs(args, cfg.keys.length);
+  if (!parsed.ok) {
+    console.error(parsed.message);
+    process.exit(1);
+  }
+  const { indices, model: overrideModel } = parsed;
+
+  if (overrideModel) {
+    console.log(`使用统一测试模型: ${overrideModel}`);
+  }
+  if (indices.length < cfg.keys.length) {
+    console.log(`测试 ${indices.length} / ${cfg.keys.length} 个 key（编号 ${indices.map(i => i + 1).join(', ')}）`);
+  }
+
   let okCount = 0;
   let failCount = 0;
-  for (let i = 0; i < cfg.keys.length; i++) {
+  let skippedCount = 0;
+  for (const i of indices) {
     const k = cfg.keys[i];
-    process.stdout.write(`[${i + 1}] ${k.name} ... `);
-    if (k.enabled === false) { console.log('禁用，跳过'); continue; }
-    const r = await testKeyWithFallback(k);
+    if (!k || typeof k !== 'object') {
+      console.log(`[${i + 1}] (空条目) ... 配置无效：不是一个有效的对象`);
+      failCount++;
+      continue;
+    }
+    process.stdout.write(`[${i + 1}] ${k.name || maskKey(k.key)} ... `);
+    if (k.enabled === false) {
+      console.log('禁用，跳过');
+      skippedCount++;
+      continue;
+    }
+    const invalid = validateEntry(k);
+    if (invalid) {
+      console.log(`配置无效：${invalid}`);
+      failCount++;
+      continue;
+    }
+    const t0 = Date.now();
+    const r = await testKeyWithFallback(k, overrideModel);
+    const ms = Date.now() - t0;
     if (r.ok) {
-      console.log(`✓ OK  (model: ${r.model})`);
+      console.log(`✓ OK  (model: ${r.model}, ${ms}ms)`);
       okCount++;
     } else {
       const last = r.tried[r.tried.length - 1] || {};
       const tag = last.networkError
         ? '网络错误'
         : (last.status ? `HTTP ${last.status}` : '未知错误');
-      console.log(`✗ ${tag}`);
+      console.log(`✗ ${tag}  (${ms}ms)`);
       printTestFailure(r, '    ');
       failCount++;
     }
   }
-  console.log(`\n合计: ${okCount} 可用 / ${failCount} 失败`);
+  console.log(`\n合计: ${okCount} 可用 / ${failCount} 失败${skippedCount ? ` / ${skippedCount} 跳过` : ''}`);
+  if (failCount > 0) process.exitCode = 1;
 }
 
 async function cmdToggle(args) {
@@ -771,15 +872,23 @@ function cmdHelp() {
   console.log(`Claude Code Key Rotator
 
 用法:
-  ck                       启动 Claude Code（按顺序测试 key，用第一个可用的；运行中失效自动换下一个）
-  ck start [...]           同上，多余参数透传给 claude
-  ck add                   添加 key（交互）
-  ck add <name> <url> <k>  添加 key（一行命令）
-  ck list                  列出所有 key
-  ck test                  测试所有 key
-  ck remove [编号]         删除 key
-  ck toggle <编号>         启用/禁用某个 key
-  ck help                  本帮助
+  ck                            启动 Claude Code（按顺序测试 key，用第一个可用的；运行中失效自动换下一个）
+  ck start [...]                同上，多余参数透传给 claude
+  ck add                        添加 key（交互）
+  ck add <name> <url> <k>       添加 key（一行命令）
+  ck list                       列出所有 key
+  ck test                       测试所有 key（用各自的 test_model，缺省 fallback）
+  ck test <编号>                只测某一个 key，例如 ck test 2
+  ck test <a>-<b>               测试编号区间，例如 ck test 1-4
+  ck test <编号|区间> <模型>    统一用指定模型测试，例如 ck test 1-4 "claude-opus-4-7"
+  ck remove [编号]              删除 key
+  ck toggle <编号>              启用/禁用某个 key
+  ck help                       本帮助
+
+测试范围示例:
+  ck test 1-4 "claude-opus-4-7"   测前 4 个 key，全部用 claude-opus-4-7 模型
+  ck test 2                       只测第 2 个 key
+  ck test 1-4                     测前 4 个 key，每个用自己的 test_model
 
 配置文件: ${CONFIG_FILE}
 代理日志: ${LOG_FILE}

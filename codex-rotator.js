@@ -16,13 +16,10 @@ const path = require('path');
 const readline = require('readline');
 const { spawn } = require('child_process');
 const { Readable } = require('stream');
+const { parseTestArgs } = require('./test-args');
 
 const DEFAULT_PORT = 8766;
 const DEFAULT_TEST_MODEL = 'gpt-5-5';
-const FALLBACK_TEST_MODELS = [
-  'gpt-5.2',
-  'gpt-5.3-codex',
-];
 
 const CONFIG_FILE = process.env.CODEX_ROTATOR_CONFIG
   ? path.resolve(process.env.CODEX_ROTATOR_CONFIG)
@@ -68,8 +65,19 @@ function maskKey(k) {
   return k.slice(0, 6) + '...' + k.slice(-4);
 }
 
-function unique(arr) {
-  return [...new Set(arr.filter(Boolean))];
+// 上游有时会在错误体里把 key 整段回显。打印前先把所有可能泄露的位置打码。
+function scrubKey(text, key) {
+  if (!text || !key || key.length < 8) return text || '';
+  const masked = maskKey(key);
+  let out = String(text);
+  // 直接替换原文里的 key（全局）
+  // 不用正则，避免 key 里有正则元字符。
+  while (true) {
+    const i = out.indexOf(key);
+    if (i < 0) break;
+    out = out.slice(0, i) + masked + out.slice(i + key.length);
+  }
+  return out;
 }
 
 function trimRightSlash(s) {
@@ -78,15 +86,6 @@ function trimRightSlash(s) {
 
 function isHttpUrl(s) {
   return /^https?:\/\//i.test(String(s || '').trim());
-}
-
-function safeJsonParse(bufOrText) {
-  if (!bufOrText) return null;
-  try {
-    return JSON.parse(Buffer.isBuffer(bufOrText) ? bufOrText.toString('utf-8') : String(bufOrText));
-  } catch {
-    return null;
-  }
 }
 
 function tomlString(s) {
@@ -128,7 +127,14 @@ function loadConfig() {
   }
 
   try {
-    const cfg = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    let raw = fs.readFileSync(p, 'utf-8');
+    // 去掉 Windows 编辑器常加的 UTF-8 BOM，避免 JSON.parse 失败。
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('根节点必须是 JSON object（含 port 和 keys）');
+    }
+    const cfg = parsed;
 
     if (!Array.isArray(cfg.keys)) cfg.keys = [];
     if (!cfg.port) cfg.port = DEFAULT_PORT;
@@ -365,13 +371,14 @@ async function testKey(entry, model, timeoutMs = 60000) {
     clearTimeout(t);
 
     const text = await res.text().catch(() => '');
+    const safeText = scrubKey(text, entry.key);
 
     if (res.ok) {
       return {
         ok: true,
         status: res.status,
         model,
-        responseSample: text.slice(0, 600),
+        responseSample: safeText.slice(0, 600),
       };
     }
 
@@ -379,12 +386,12 @@ async function testKey(entry, model, timeoutMs = 60000) {
       ok: false,
       status: res.status,
       statusText: res.statusText || '',
-      errorBody: parseErrorBody(text),
-      rawBody: text.slice(0, 1000),
+      errorBody: parseErrorBody(safeText),
+      rawBody: safeText.slice(0, 1000),
       model,
       responsesUnsupported: res.status === 404 || res.status === 405,
       transient: TRANSIENT_STATUS.has(res.status),
-      shouldSwitch: shouldSwitchOnResponse(res.status, text),
+      shouldSwitch: shouldSwitchOnResponse(res.status, safeText),
     };
   } catch (e) {
     clearTimeout(t);
@@ -399,10 +406,21 @@ async function testKey(entry, model, timeoutMs = 60000) {
   }
 }
 
-async function testKeyWithFallback(entry) {
-  const candidates = unique([
-    entry.test_model || DEFAULT_TEST_MODEL,
-  ]);
+async function testKeyWithFallback(entry, overrideModel) {
+  if (overrideModel) {
+    const r = await testKey(entry, overrideModel);
+    if (r.ok) {
+      return { ok: true, model: r.model, tried: [r] };
+    }
+    return {
+      ok: false,
+      transient: !!r.transient,
+      responsesUnsupported: !!r.responsesUnsupported,
+      tried: [r],
+    };
+  }
+
+  const candidates = [entry.test_model || DEFAULT_TEST_MODEL];
 
   const tried = [];
 
@@ -691,12 +709,13 @@ function startProxy(cfg, startIndex) {
 
       if (shouldSwitchOnResponse(upstreamRes.status, '')) {
         const errText = await upstreamRes.text().catch(() => '');
+        const safeErrText = scrubKey(errText, entry.key);
         if (shouldSwitchOnResponse(upstreamRes.status, errText)) {
           console.log(`\n[rotator] key "${tag}" 可能失效或上游不可用（HTTP ${upstreamRes.status}），自动切换`);
-          const parsed = parseErrorBody(errText);
+          const parsed = parseErrorBody(safeErrText);
           if (parsed) console.log(`[rotator] 响应：${parsed}`);
 
-          logLine(`[${tag}] ${upstreamRes.status}: ${errText.slice(0, 500)}`);
+          logLine(`[${tag}] ${upstreamRes.status}: ${safeErrText.slice(0, 500)}`);
 
           state.deadKeys.add(state.idx);
           attempt++;
@@ -928,10 +947,12 @@ async function cmdStart(extraArgs) {
 
       process.stdout.write(`${label} ... `);
 
+      const t0 = Date.now();
       const r = await testKeyWithFallback(k);
+      const ms = Date.now() - t0;
 
       if (r.ok) {
-        console.log(`✓ OK  (model: ${r.model})`);
+        console.log(`✓ OK  (model: ${r.model}, ${ms}ms)`);
         firstOk = i;
         firstOkModel = r.model;
         break;
@@ -945,9 +966,9 @@ async function cmdStart(extraArgs) {
       if (r.transient && firstTransient === -1) {
         firstTransient = i;
         firstTransientModel = k.test_model || DEFAULT_TEST_MODEL;
-        console.log(`⚠ ${tag}（暂时性错误，先记为候选）`);
+        console.log(`⚠ ${tag}（暂时性错误，先记为候选）  (${ms}ms)`);
       } else {
-        console.log(`✗ ${tag}`);
+        console.log(`✗ ${tag}  (${ms}ms)`);
       }
 
       printTestFailure(r);
@@ -1154,20 +1175,47 @@ function cmdList() {
   listKeys(cfg);
 }
 
-async function cmdTest() {
-  const cfg = loadConfig();
+async function cmdTest(args) {
+  if (args.length === 1 && (args[0] === '-h' || args[0] === '--help')) {
+    console.log(`cx test [编号|区间] [模型]
 
-  if (!cfg.keys.length) {
-    console.log('(空)');
+不传参数：测试所有 key（各自的 test_model）
+cx test 2                  只测第 2 个 key
+cx test 1-4                测试编号区间（包含两端）
+cx test 1-4 "模型"          统一用该模型测试（双/单引号可省）
+
+错误退出码:
+  非法范围(如 4-1)、超出范围、空 keys、无法解析参数 → 退出码 1
+`);
     return;
+  }
+
+  const cfg = loadConfig();
+  const parsed = parseTestArgs(args, cfg.keys.length);
+  if (!parsed.ok) {
+    console.error(parsed.message);
+    process.exit(1);
+  }
+  const { indices, model: overrideModel } = parsed;
+
+  if (overrideModel) {
+    console.log(`使用统一测试模型: ${overrideModel}`);
+  }
+  if (indices.length < cfg.keys.length) {
+    console.log(`测试 ${indices.length} / ${cfg.keys.length} 个 key（编号 ${indices.map(i => i + 1).join(', ')}）`);
   }
 
   let okCount = 0;
   let failCount = 0;
   let skippedCount = 0;
 
-  for (let i = 0; i < cfg.keys.length; i++) {
+  for (const i of indices) {
     const k = cfg.keys[i];
+    if (!k || typeof k !== 'object') {
+      console.log(`[${i + 1}] (空条目) ... 配置无效：不是一个有效的对象`);
+      failCount++;
+      continue;
+    }
 
     process.stdout.write(`[${i + 1}] ${k.name || maskKey(k.key)} ... `);
 
@@ -1184,10 +1232,12 @@ async function cmdTest() {
       continue;
     }
 
-    const r = await testKeyWithFallback(k);
+    const t0 = Date.now();
+    const r = await testKeyWithFallback(k, overrideModel);
+    const ms = Date.now() - t0;
 
     if (r.ok) {
-      console.log(`✓ OK  (model: ${r.model})`);
+      console.log(`✓ OK  (model: ${r.model}, ${ms}ms)`);
       okCount++;
       continue;
     }
@@ -1197,12 +1247,12 @@ async function cmdTest() {
       ? '网络错误'
       : (last.status ? `HTTP ${last.status}` : '未知错误');
 
-    console.log(`✗ ${tag}`);
+    console.log(`✗ ${tag}  (${ms}ms)`);
     printTestFailure(r, '    ');
     failCount++;
   }
-
-  console.log(`\n合计: ${okCount} 可用 / ${failCount} 失败 / ${skippedCount} 跳过`);
+  console.log(`\n合计: ${okCount} 可用 / ${failCount} 失败${skippedCount ? ` / ${skippedCount} 跳过` : ''}`);
+  if (failCount > 0) process.exitCode = 1;
 }
 
 async function cmdToggle(args) {
@@ -1265,6 +1315,15 @@ function cmdHelp() {
 
   cx test
       测试所有 key 的 /v1/responses 可用性
+
+  cx test <编号>
+      只测指定编号的 key，例如 cx test 2
+
+  cx test <a>-<b>
+      测试编号区间，例如 cx test 1-4
+
+  cx test <编号|区间> <模型>
+      统一用指定模型测试，例如 cx test 1-4 "gpt-5.5"
 
   cx remove [编号]
       删除 key

@@ -3,26 +3,20 @@
   "keys": [
     {
       "name": "anyrouter",
+      "base_url": "https://a-ocnfniawgw.cn-shanghai.fcapp.run",
+      "key": "sk-dejbvmZDkvcT0qOrRsHWqb2BjNQCHzJLQjunqPG8rwLQdl8h",
+      "enabled": true
+    },
+    {
+      "name": "any2",
       "base_url": "https://anyrouter.top",
-      "key": "sk-hc1vLaWiB1xxeB2pEWp1Q8SQM1NxxonouLikQE8YOlKp69Xj",
+      "key": "sk-exWPYMJINime0M10Cpiixz5AfMeXTV8aYFQFIv3x3xG3TAqn",
       "enabled": true
     },
     {
       "name": "cubence",
       "base_url": "https://api.cubence.com",
       "key": "sk-user-3dbb1c8686e234fc33d6dbcebe430918730af2957f24b929e76979689691ec64",
-      "enabled": true
-    },
-    {
-      "name": "newapi",
-      "base_url": "http://localhost:3000",
-      "key": "sk-vhGB5qu0Hpi2Gukim1y8x3UBhvCdIjoJ4nhOAkJdDyNbyY3E",
-      "enabled": false
-    },
-    {
-      "name": "metapi",
-      "base_url": "https://localhost:4000",
-      "key": "sk-12345678",
       "enabled": true
     }
   ]

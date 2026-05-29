@@ -5,8 +5,8 @@
 //
 // 用法:
 //   node test-model.js                              # 用默认模型 'claude-opus-4-7[1m]'
-//   node test-model.js claude-opus-4-7[1m]          # 显式指定模型
-//   node test-model.js claude-opus-4-7[1m] -v E     # 只跑姿势 E
+//   node test-model.js claude-opus-4-8[1m]          # 显式指定模型
+//   node test-model.js claude-opus-4-8[1m] -v E     # 只跑姿势 E
 //   node test-model.js -v A,E                       # 只跑 A 和 E
 //   node test-model.js --stop-on-success            # 第一个通过的姿势就停
 //   node test-model.js --max-tokens 256 -m "你好"   # 自定义参数

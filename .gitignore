@@ -1,0 +1,24 @@
+# Keep API keys out of git no matter what.
+keys.json
+codex-keys.json
+
+# Local logs.
+rotator.log
+codex-rotator.log
+
+# Captured Claude Code traces (this repo includes a capture tool).
+claude-capture-logs/
+
+# Node tooling.
+node_modules/
+npm-debug.log*
+
+# OS / editor cruft.
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Local claude config for this repo.
+.claude/settings.local.json
